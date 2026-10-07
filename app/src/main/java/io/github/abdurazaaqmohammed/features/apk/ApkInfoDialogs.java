@@ -324,7 +324,7 @@ public class ApkInfoDialogs {
         AlertDialog ad = dialogUtil.getDialogBuilder()
                 .setView(display)
                 .setNeutralButton(R.string.more, (dialog, which) -> {
-                    List<String> moreTitles = new ArrayList<>(Arrays.asList(context.rss.getString(R.string.sign_apk), context.rss.getString(R.string.optimize_apk), context.rss.getString(R.string.decompile_reandroid_apkeditor), context.rss.getString(R.string.refactor_obfuscated_resource_names), context.rss.getString(R.string.protect_reandroid_apkeditor), context.rss.getString(R.string.clone_apk), context.rss.getString(R.string.view_certificate), context.rss.getString(R.string.add_toast_dialog), context.rss.getString(R.string.remove_all_toasts), context.rss.getString(R.string.remove_signature), context.rss.getString(R.string.signature_health), context.rss.getString(R.string.manifest_toggles), context.rss.getString(R.string.permissions), "Block Internet (make offline)"));
+                    List<String> moreTitles = new ArrayList<>(Arrays.asList(context.rss.getString(R.string.sign_apk), context.rss.getString(R.string.optimize_apk), context.rss.getString(R.string.decompile_reandroid_apkeditor), context.rss.getString(R.string.refactor_obfuscated_resource_names), context.rss.getString(R.string.protect_reandroid_apkeditor), context.rss.getString(R.string.clone_apk), context.rss.getString(R.string.view_certificate), context.rss.getString(R.string.add_toast_dialog), context.rss.getString(R.string.remove_all_toasts), context.rss.getString(R.string.remove_signature), context.rss.getString(R.string.signature_health), context.rss.getString(R.string.manifest_toggles), context.rss.getString(R.string.permissions)));
                     // Third-party APK actions appended after the 14 built-ins.
                     final List<ApkMoreAction> pluginMore =
                             ExtensionRegistry.apkActions();
@@ -656,10 +656,9 @@ public class ApkInfoDialogs {
                     else if (which1 == 10) signatures.showSignatureHealthDialog(file);
                     else if (which1 == 11) manifestEditor.showManifestTogglesDialog(file);
                     else if (which1 == 12) manifestEditor.showPermissionsDialog(file);
-                    else if (which1 == 13) manifestEditor.blockInternetPermissions(file);
                     else {
-                        // Third-party APK action: indices 0-13 are built-ins above.
-                        int pluginIndex = which1 - 14;
+                        // Third-party APK action: indices 0-12 are built-ins above.
+                        int pluginIndex = which1 - 13;
                         if (pluginIndex >= 0 && pluginIndex < pluginMore.size()) {
                             ApkMoreAction ext = pluginMore.get(pluginIndex);
                             if (ext != null) {
@@ -669,7 +668,7 @@ public class ApkInfoDialogs {
                                 }
                             }
                         } else {
-                            int extIndex = which1 - 14 - pluginMore.size();
+                            int extIndex = which1 - 13 - pluginMore.size();
                             if (extIndex >= 0 && extIndex < externalApk.size()) {
                                 ExternalActions.Entry found =
                                         externalApk.get(extIndex);

@@ -38,25 +38,16 @@ import io.github.abdurazaaqmohammed.ui.dialogs.FilePickerDialog;
 
 import android.os.Environment;
 import com.google.android.material.checkbox.MaterialCheckBox;
-import com.reandroid.apk.APKLogger;
-import com.reandroid.apkeditor.compile.BuildOptions;
-import com.reandroid.apkeditor.compile.Builder;
-import com.reandroid.apkeditor.decompile.DecompileOptions;
-import com.reandroid.apkeditor.decompile.Decompiler;
 
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.model.FileHeader;
 import net.lingala.zip4j.model.ZipParameters;
 import net.lingala.zip4j.model.enums.CompressionMethod;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -89,11 +80,96 @@ public class ApkManifestEditor {
         rss = context.rss;
     }
 
+    /** "android.permission.INTERNET" -> "INTERNET" ; "INTERNET" -> "INTERNET" */
     private static String shortPermName(String perm) {
         if (perm == null) return "";
         String p = perm.trim();
+        if (p.isEmpty()) return "";
         int idx = p.lastIndexOf('.');
         return idx >= 0 ? p.substring(idx + 1) : p;
+    }
+
+    /**
+     * One-click "make offline" for an APK: removes ONLY the 4 network permissions.
+     * Uses exact short-name matching, so no other permission is touched.
+     */
+    public void blockInternetPermissions(File apkFile) {
+        ProgressManager pm = new ProgressManager(context, true).show();
+        pm.setText("Removing network permissions...");
+        new Thread(() -> {
+            try {
+                final Set<String> targets = new HashSet<>(Arrays.asList(
+                        "INTERNET",
+                        "ACCESS_WIFI_STATE",
+                        "CHANGE_WIFI_STATE",
+                        "ACCESS_NETWORK_STATE"
+                ));
+
+                List<XMLEntry> entries = decodeManifest(apkFile);
+                if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
+
+                int removed = 0;
+                for (int i = entries.size() - 1; i >= 0; i--) {
+                    XMLEntry item = entries.get(i);
+                    String tag = item.getTag();
+                    String value = item.getValue();
+                    if (tag == null || value == null) continue;
+                    if (!tag.contains("uses-permission")) continue;
+
+                    String shortName = shortPermName(value);
+                    if (shortName.isEmpty()) continue;
+
+                    if (targets.contains(shortName)) {
+                        entries.remove(i);
+                        removed++;
+                    }
+                }
+
+                if (removed == 0) {
+                    pm.dismiss();
+                    context.handler.post(() ->
+                            Extensions.showMessage(context, "No network permissions found to block"));
+                    return;
+                }
+
+                if (UiPrefs.genBackup(context)) {
+                    try { FileUtils.copyFile(apkFile, new File(apkFile.getPath() + ".bak")); }
+                    catch (Exception ignored) {}
+                }
+
+                writeManifestEntries(apkFile, entries);
+
+                SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(context);
+                boolean sign = settings.getBoolean("autosign", true);
+
+                pm.dismiss();
+                final int done = removed;
+
+                if (sign) {
+                    SignWrapper.requireAuth(context, sw -> new Thread(() -> {
+                        try {
+                            sw.signApk(apkFile);
+                            context.handler.post(() -> {
+                                Extensions.showMessage(context,
+                                        "Blocked " + done + " network permission(s)");
+                                context.loadFolderInPane(apkFile.getParentFile(), true);
+                            });
+                        } catch (Exception e) {
+                            context.handler.post(() -> new ErrorUtil(context).showError(e));
+                        }
+                    }).start());
+                } else {
+                    context.handler.post(() -> {
+                        Extensions.showMessage(context,
+                                "Blocked " + done + " network permission(s)");
+                        context.loadFolderInPane(apkFile.getParentFile(), true);
+                    });
+                }
+            } catch (Exception e) {
+                pm.dismiss();
+                context.handler.post(() -> new ErrorUtil(context).showError(e));
+            }
+        }).start();
     }
 
     public void showEditManifestDialog(File apkFile) {
@@ -546,25 +622,16 @@ public class ApkManifestEditor {
         writeManifestEntries(apkFile, entries);
     }
 
-    /** Single-permission removal (legacy callers). Uses the safe rebuild path. */
     public void removeManifestPermission(File apkFile, String perm) throws Exception {
-        Set<String> set = new HashSet<>();
-        set.add(perm);
-        ProgressManager pm = new ProgressManager(context, true).show();
-        APKLogger logger = pm.getLogger();
-        try {
-            stripPermissionsViaRebuild(apkFile, set, logger);
-        } finally {
-            try { logger.close(); } catch (Exception ignored) {}
-            pm.dismiss();
+        List<XMLEntry> entries = decodeManifest(apkFile);
+        if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            XMLEntry item = entries.get(i);
+            if (item.getTag().contains("uses-permission") && perm.equals(item.getValue())) entries.remove(i);
         }
+        writeManifestEntries(apkFile, entries);
     }
 
-    /**
-     * Reliable permission editor: decompiles the APK to a temp dir, edits
-     * AndroidManifest.xml as plain text, rebuilds with REAndroid, then copies
-     * the result back. Avoids aXMLEncoder bugs that corrupt the binary manifest.
-     */
     public void showPermissionsDialog(File apkFile) {
         ProgressManager pm = new ProgressManager(context, true).show();
         new Thread(() -> {
@@ -596,43 +663,35 @@ public class ApkManifestEditor {
             context.handler.post(() -> {
                 AlertDialog dialog = dialogUtil.getDialogBuilder()
                         .setTitle(rss.getString(R.string.me_perms_n, perms.length))
-                        .setMessage("Uncheck permissions to remove. The APK will be decompiled, edited, and rebuilt.")
                         .setMultiChoiceItems(labels, keep, (d, which, isChecked) -> keep[which] = isChecked)
                         .setNegativeButton(android.R.string.cancel, null)
                         .setPositiveButton(rss.getString(R.string.me_remove_unchecked), (d, which) -> {
                             SignWrapper[] wrapper = new SignWrapper[1];
                             SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(context);
                             boolean[] sign = {settings.getBoolean("autosign", true)};
-
-                            Set<String> toRemove = new HashSet<>();
-                            for (int i = 0; i < perms.length; i++) {
-                                if (!keep[i]) toRemove.add(perms[i]);
-                            }
-                            if (toRemove.isEmpty()) {
-                                Extensions.showMessage(context, "Nothing to remove");
-                                return;
-                            }
-
-                            ProgressManager pm2 = new ProgressManager(context, true).show();
-                            pm2.setText("Rebuilding APK...");
-                            APKLogger logger = pm2.getLogger();
-
                             Runnable doEdit = () -> {
+                                ProgressManager pm2 = new ProgressManager(context, true).show();
                                 new Thread(() -> {
                                     try {
-                                        stripPermissionsViaRebuild(apkFile, toRemove, logger);
-                                        if (sign[0] && wrapper[0] != null) wrapper[0].signApk(apkFile);
-                                        try { logger.close(); } catch (Exception ignored) {}
-                                        context.handler.post(pm2::dismiss);
+                                        int removed = 0;
+                                        for (int i = 0; i < perms.length; i++) {
+                                            if (keep[i]) continue;
+                                            try {
+                                                removeManifestPermission(apkFile, perms[i]);
+                                                removed++;
+                                            } catch (Exception ignored) {
+                                            }
+                                        }
+                                        if (sign[0]) wrapper[0].signApk(apkFile);
+                                        pm2.dismiss();
+                                        int done = removed;
                                         context.handler.post(() -> {
-                                            Extensions.showMessage(context,
-                                                    "Rebuilt APK without " + toRemove.size() + " permission(s)");
+                                            Extensions.showMessage(context, rss.getString(R.string.me_perms_removed, done));
                                             context.loadFolderInPane(apkFile.getParentFile(), true);
                                         });
                                     } catch (Exception e) {
-                                        try { logger.close(); } catch (Exception ignored) {}
-                                        context.handler.post(pm2::dismiss);
-                                        context.handler.post(() -> new ErrorUtil(context).showError(e));
+                                        pm2.dismiss();
+                                        new ErrorUtil(context).showError(e);
                                     }
                                 }).start();
                             };
@@ -645,124 +704,6 @@ public class ApkManifestEditor {
                 dialogUtil.styleAlertDialog(dialog);
             });
         }).start();
-    }
-
-    /**
-     * Decompile → edit manifest text → rebuild → replace original.
-     * Caller supplies the APKLogger (from a shown ProgressManager).
-     */
-    private void stripPermissionsViaRebuild(File apkFile, Set<String> permsToRemove,
-                                            APKLogger logger) throws Exception {
-        File tempDir = new File(context.getCacheDir(), "perm_edit_" + System.currentTimeMillis());
-        try {
-            if (!tempDir.mkdirs() && !tempDir.isDirectory()) {
-                throw new IOException("Cannot create temp dir");
-            }
-
-            // 1) Decompile to temp dir
-            DecompileOptions dopt = new DecompileOptions();
-            dopt.inputFile = apkFile;
-            dopt.outputFile = tempDir;
-            dopt.frameworkVersion = 35;
-            dopt.type = "xml";
-            dopt.loadDex = 0;
-            dopt.dex = false;
-            dopt.noDexDebug = true;
-            dopt.force = true;
-            dopt.validateResDir = true;
-            dopt.splitJson = true;
-            Decompiler decompiler = dopt.newCommandExecutor(logger);
-            decompiler.setEnableLog(true);
-            decompiler.runCommand();
-
-            File manifestFile = new File(tempDir, "AndroidManifest.xml");
-            if (!manifestFile.exists()) {
-                throw new IOException("AndroidManifest.xml not found after decompile");
-            }
-
-            // 2) Edit manifest text
-            String content = readTextFile(manifestFile);
-            Set<String> shortNames = new HashSet<>();
-            for (String p : permsToRemove) {
-                String s = shortPermName(p);
-                if (!s.isEmpty()) shortNames.add(s);
-            }
-            String edited = removePermissionsFromManifestText(content, shortNames);
-            if (edited == null) {
-                throw new IOException("No matching <uses-permission> found in manifest");
-            }
-            writeTextFile(manifestFile, edited);
-
-            // 3) Rebuild
-            File rebuilt = new File(tempDir, "rebuilt.apk");
-            BuildOptions bopt = new BuildOptions();
-            bopt.inputFile = tempDir;
-            bopt.outputFile = rebuilt;
-            bopt.type = BuildOptions.TYPE_XML;
-            bopt.force = true;
-            bopt.validateResDir = true;
-            bopt.noCache = true;
-            new Builder(bopt, logger).runCommand();
-
-            if (!rebuilt.exists() || rebuilt.length() == 0) {
-                throw new IOException("Rebuild failed: output APK not produced");
-            }
-
-            // 4) Backup original + replace
-            if (UiPrefs.genBackup(context)) {
-                try { FileUtils.copyFile(apkFile, new File(apkFile.getPath() + ".bak")); }
-                catch (Exception ignored) {}
-            }
-            FileUtils.copyFile(rebuilt, apkFile);
-
-            // 5) Caller signs after this method returns
-        } finally {
-            deleteRecursively(tempDir);
-        }
-    }
-
-    /**
-     * Removes all <uses-permission> tags whose android:name short-form matches
-     * any entry in shortNames. Returns null when nothing was removed.
-     */
-    private static String removePermissionsFromManifestText(String content, Set<String> shortNames) {
-        StringBuilder result = new StringBuilder(content.length());
-        int i = 0;
-        int removed = 0;
-        while (i < content.length()) {
-            int start = content.indexOf("<uses-permission", i);
-            if (start < 0) {
-                result.append(content, i, content.length());
-                break;
-            }
-            result.append(content, i, start);
-            int end = content.indexOf('>', start);
-            if (end < 0) {
-                result.append(content, start, content.length());
-                break;
-            }
-            String tag = content.substring(start, end + 1);
-            boolean shouldRemove = false;
-            int nameIdx = tag.indexOf("android:name=\"");
-            if (nameIdx >= 0) {
-                int valStart = nameIdx + "android:name=\"".length();
-                int valEnd = tag.indexOf('"', valStart);
-                if (valEnd > valStart) {
-                    String permName = tag.substring(valStart, valEnd);
-                    String shortName = shortPermName(permName);
-                    if (shortNames.contains(shortName)) {
-                        shouldRemove = true;
-                    }
-                }
-            }
-            if (shouldRemove) {
-                removed++;
-            } else {
-                result.append(tag);
-            }
-            i = end + 1;
-        }
-        return removed > 0 ? result.toString() : null;
     }
 
     public void showManifestTogglesDialog(File apkFile) {
@@ -887,31 +828,5 @@ public class ApkManifestEditor {
         try (ZipFile sourceZip = new ZipFile(apkFile)) {
             sourceZip.addStream(is, zp);
         }
-    }
-
-    private static String readTextFile(File f) throws IOException {
-        try (InputStream is = FileUtils.getInputStream(f);
-             BufferedReader r = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line).append('\n');
-            return sb.toString();
-        }
-    }
-
-    private static void writeTextFile(File f, String text) throws IOException {
-        try (OutputStream os = FileUtils.getOutputStream(f)) {
-            os.write(text.getBytes(StandardCharsets.UTF_8));
-        }
-    }
-
-    private static void deleteRecursively(File f) {
-        if (f == null) return;
-        if (f.isDirectory()) {
-            File[] kids = f.listFiles();
-            if (kids != null) for (File k : kids) deleteRecursively(k);
-        }
-        //noinspection ResultOfMethodCallIgnored
-        f.delete();
     }
 }

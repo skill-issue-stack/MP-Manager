@@ -38,30 +38,18 @@ import io.github.abdurazaaqmohammed.ui.dialogs.FilePickerDialog;
 
 import android.os.Environment;
 import com.google.android.material.checkbox.MaterialCheckBox;
-import com.reandroid.apk.APKLogger;
-import com.reandroid.apkeditor.compile.BuildOptions;
-import com.reandroid.apkeditor.compile.Builder;
-import com.reandroid.apkeditor.decompile.DecompileOptions;
-import com.reandroid.apkeditor.decompile.Decompiler;
 
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.model.FileHeader;
 import net.lingala.zip4j.model.ZipParameters;
 import net.lingala.zip4j.model.enums.CompressionMethod;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import io.github.abdurazaaqmohammed.MPManager.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -87,183 +75,6 @@ public class ApkManifestEditor {
         this.dialogUtil = dialogUtil;
         this.uiHelper = uiHelper;
         rss = context.rss;
-    }
-
-    /**
-     * One-click "Block Internet" — decompiles APK, strips network permissions
-     * from AndroidManifest.xml as text, rebuilds, saves as a NEW file with
-     * "_nointernet" suffix. Never touches the original APK.
-     */
-    public void blockInternetPermissions(File apkFile) {
-        ProgressManager pm = new ProgressManager(context, true).show();
-        pm.setText("Removing network permissions...");
-        APKLogger logger = pm.getLogger();
-        new Thread(() -> {
-            File tempDir = null;
-            try {
-                tempDir = new File(context.getCacheDir(), "block_net_" + System.currentTimeMillis());
-                if (!tempDir.mkdirs() && !tempDir.isDirectory()) {
-                    throw new IOException("Cannot create temp dir");
-                }
-
-                // 1) Decompile APK
-                DecompileOptions decompileOptions = new DecompileOptions();
-                decompileOptions.inputFile = apkFile;
-                decompileOptions.outputFile = tempDir;
-                decompileOptions.frameworkVersion = 35;
-                decompileOptions.loadDex = 0;
-                decompileOptions.type = "xml";
-                decompileOptions.dexLib = "internal";
-                decompileOptions.dex = false;
-                decompileOptions.dexMarkers = false;
-                decompileOptions.force = true;
-                decompileOptions.keepResPath = false;
-                decompileOptions.noDexDebug = true;
-                decompileOptions.splitJson = true;
-                decompileOptions.validateResDir = true;
-                Decompiler decompiler = decompileOptions.newCommandExecutor(logger);
-                decompiler.setEnableLog(true);
-                decompiler.runCommand();
-
-                // 2) Edit AndroidManifest.xml as text
-                File manifestFile = new File(tempDir, "AndroidManifest.xml");
-                if (!manifestFile.exists()) {
-                    throw new IOException("AndroidManifest.xml not found after decompile");
-                }
-
-                String content = readTextFile(manifestFile);
-                String[] targets = {
-                        "android.permission.INTERNET",
-                        "android.permission.ACCESS_NETWORK_STATE",
-                        "android.permission.ACCESS_WIFI_STATE",
-                        "android.permission.CHANGE_WIFI_STATE"
-                };
-
-                String[] lines = content.split("\n");
-                StringBuilder result = new StringBuilder();
-                int removed = 0;
-                for (String line : lines) {
-                    boolean shouldRemove = false;
-                    if (line.contains("<uses-permission")) {
-                        for (String t : targets) {
-                            if (line.contains(t)) {
-                                shouldRemove = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (shouldRemove) {
-                        removed++;
-                    } else {
-                        result.append(line).append('\n');
-                    }
-                }
-
-                if (removed == 0) {
-                    try { logger.close(); } catch (Exception ignored) {}
-                    pm.dismiss();
-                    context.handler.post(() ->
-                            Extensions.showMessage(context, "No network permissions found"));
-                    return;
-                }
-
-                writeTextFile(manifestFile, result.toString());
-
-                // 3) Rebuild
-                File rebuilt = new File(tempDir, "rebuilt.apk");
-                BuildOptions bo = new BuildOptions();
-                bo.inputFile = tempDir;
-                bo.outputFile = rebuilt;
-                bo.type = BuildOptions.TYPE_XML;
-                bo.extractNativeLibs = "manifest";
-                bo.dexLib = BuildOptions.DEX_LIB_INTERNAL;
-                bo.validateResDir = true;
-                bo.noCache = true;
-                bo.dexProfile = false;
-                bo.resDirName = null;
-                new Builder(bo, logger).runCommand();
-
-                if (!rebuilt.exists() || rebuilt.length() == 0) {
-                    throw new IOException("Rebuild failed: output APK not produced");
-                }
-
-                // 4) Save as new APK next to original
-                String name = apkFile.getName();
-                int dot = name.lastIndexOf('.');
-                String base = dot > 0 ? name.substring(0, dot) : name;
-                File outputFile = new File(apkFile.getParentFile(), base + "_nointernet.apk");
-                int counter = 1;
-                while (outputFile.exists()) {
-                    outputFile = new File(apkFile.getParentFile(),
-                            base + "_nointernet_" + (++counter) + ".apk");
-                }
-                FileUtils.copyFile(rebuilt, outputFile);
-
-                try { logger.close(); } catch (Exception ignored) {}
-                pm.dismiss();
-
-                // 5) Sign the new APK
-                SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(context);
-                boolean sign = settings.getBoolean("autosign", true);
-                final File finalOutput = outputFile;
-                final int done = removed;
-
-                if (sign) {
-                    SignWrapper.requireAuth(context, sw -> new Thread(() -> {
-                        try {
-                            sw.signApk(finalOutput);
-                            context.handler.post(() -> {
-                                Extensions.showMessage(context,
-                                        "Blocked " + done + " perm(s). Saved: " + finalOutput.getName());
-                                context.loadFolderInPane(apkFile.getParentFile(), true);
-                            });
-                        } catch (Exception e) {
-                            context.handler.post(() -> new ErrorUtil(context).showError(e));
-                        }
-                    }).start());
-                } else {
-                    context.handler.post(() -> {
-                        Extensions.showMessage(context,
-                                "Blocked " + done + " perm(s). Saved: " + finalOutput.getName());
-                        context.loadFolderInPane(apkFile.getParentFile(), true);
-                    });
-                }
-            } catch (Exception e) {
-                try { logger.close(); } catch (Exception ignored) {}
-                pm.dismiss();
-                context.handler.post(() -> new ErrorUtil(context).showError(e));
-            } finally {
-                if (tempDir != null) {
-                    try { deleteRecursively(tempDir); } catch (Exception ignored) {}
-                }
-            }
-        }).start();
-    }
-
-    private static void deleteRecursively(File f) {
-        if (f == null) return;
-        if (f.isDirectory()) {
-            File[] kids = f.listFiles();
-            if (kids != null) for (File k : kids) deleteRecursively(k);
-        }
-        //noinspection ResultOfMethodCallIgnored
-        f.delete();
-    }
-
-    private static String readTextFile(File f) throws IOException {
-        try (InputStream is = FileUtils.getInputStream(f);
-             BufferedReader r = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line).append('\n');
-            return sb.toString();
-        }
-    }
-
-    private static void writeTextFile(File f, String text) throws IOException {
-        try (OutputStream os = FileUtils.getOutputStream(f)) {
-            os.write(text.getBytes(StandardCharsets.UTF_8));
-        }
     }
 
     public void showEditManifestDialog(File apkFile) {
@@ -304,7 +115,7 @@ public class ApkManifestEditor {
             else if (tag.contains("android:versionCode")) verCodeInput.setText(verCode = e.getValue());
             else if (tag.contains("android:versionName")) verNameInput.setText(verName = e.getValue());
             else if (!foundMinSdk && tag.contains("android:minSdkVersion")) {
-                foundMinSdk = true;
+                foundMinSdk = true; // Avoid getting wrong minsdk from other property
                 int minSdkVer = Integer.parseInt(minSdkVersion = e.getValue());
                 minSdk.setText(rss.getString(R.string.android_ver_text, versions[minSdkVer-1], minSdkVer));
             }
@@ -509,6 +320,7 @@ public class ApkManifestEditor {
                 for (XMLEntry e : entries) {
                     if (e.getTag().contains("android:icon")) {
                         String val = e.getValue();
+                        // This is not changing it on all screens sizes fix this
                         if (val.startsWith("res/")) return val;
                     }
                 }
@@ -623,15 +435,12 @@ public class ApkManifestEditor {
     }
 
     private boolean isDisabledEntry(XMLEntry entry) {
-        String mid = entry.getMiddleTag();
-        String tag = entry.getTag();
-        return (mid != null && mid.contains("_disabled"))
-                || (tag != null && tag.contains("_disabled"));
+        return entry.getMiddleTag().contains("_disabled")
+                || entry.getTag().contains("_disabled");
     }
 
     private void toggleDisabled(XMLEntry entry, boolean disable) {
         String current = entry.getValue();
-        if (current == null) current = "";
         if (disable) {
             if (!current.startsWith("__DISABLED__")) {
                 entry.setValue("__DISABLED__" + current);
@@ -891,9 +700,9 @@ public class ApkManifestEditor {
     }
 
     private String appendDisabled(String middleTag) {
-        int idx = middleTag.lastIndexOf('=');
-        if (idx > 0) {
-            return middleTag.substring(0, idx) + "_disabled" + middleTag.substring(idx);
+        int eqIdx = middleTag.lastIndexOf('=');
+        if (eqIdx > 0) {
+            return middleTag.substring(0, eqIdx) + "_disabled" + middleTag.substring(eqIdx);
         }
         return middleTag.trim().isEmpty() ? middleTag : middleTag + "_disabled";
     }

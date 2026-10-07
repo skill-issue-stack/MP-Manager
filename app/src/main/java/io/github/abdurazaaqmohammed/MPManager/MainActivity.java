@@ -900,8 +900,11 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                         .setNegativeButton(android.R.string.cancel, null)
                         .setNeutralButton(android.R.string.paste, null) // Note: Need to set it after otherwise the dialog auto close
                         .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                            File inputPath = new File(input.getText().toString());
-                            boolean canOpen = inputPath.exists() && inputPath.isDirectory() || (!inputPath.exists() && inputPath.mkdirs());
+                            String inputStr = input.getText().toString().trim();
+                            File inputPath = new File(inputStr);
+                            boolean canOpen = inputPath.exists() && inputPath.isDirectory()
+                                    || (!inputPath.exists() && inputPath.mkdirs())
+                                    || "/".equals(inputStr);
                             if (!canOpen) {
                                 try {
                                     String abs = inputPath.getAbsolutePath();
@@ -1340,7 +1343,14 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         boolean shizukuDir = ShizukuFile.isAndroidDataPath(folder);
         File[] files = null;
         String folderPath = folder.getAbsolutePath();
-        boolean rootListingPath = "/".equals(folderPath) || RootManager.isRootOnlyPath(folderPath);
+
+        // SELinux denies readdir("/") for untrusted_app. Substitute a
+        // hand-built listing so the user can still navigate into subfolders.
+        if ("/".equals(folderPath)) {
+            files = syntheticRootListing();
+        }
+
+        boolean rootListingPath = !"/".equals(folderPath) && RootManager.isRootOnlyPath(folderPath);
         if (rootListingPath && AccessManager.active(this) == AccessManager.Backend.ROOT && AccessManager.fileOpsOn(this)) {
             files = AccessManager.listWithStat(this, folder.getAbsolutePath());
             if (files != null) files = Arrays.stream(files).filter(this::isNotHidden).toArray(File[]::new);
@@ -1496,11 +1506,33 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         updateNavigationButtons();
     }
 
+    /**
+     * SELinux blocks readdir("/") for regular apps (avc: denied on rootfs),
+     * so we fabricate the top-level listing ourselves. Browsing subfolders
+     * like /system, /vendor, /proc still works normally.
+     */
+    private File[] syntheticRootListing() {
+        String[] paths = {
+                "/acct", "/apex", "/bin", "/bugreports", "/cache", "/config",
+                "/data", "/debug_ramdisk", "/dev", "/etc", "/linkerconfig",
+                "/metadata", "/mnt", "/oem", "/postinstall", "/proc",
+                "/product", "/sdcard", "/storage", "/sys", "/system",
+                "/system_ext", "/vendor"
+        };
+        List<File> list = new ArrayList<>();
+        for (String p : paths) {
+            File f = new File(p);
+            // Only add paths that actually exist so the list matches the device.
+            if (f.exists()) list.add(f);
+        }
+        return list.toArray(new File[0]);
+    }
+
     public void loadZipFolderInPane(File zipFile, String path, boolean pane1, boolean addToHistory) {
         try {
             List<ZipEntryInfo> entries = new ArrayList<>();
             ZipEntryInfo parent = null;
-            HashSet<String> seenDirs = new HashSet<>() {
+            HashSet<String> seenDirs = new HashSet<String>() {
             };
             try (ZipFile zf = new ZipFile(zipFile)) {
                 String parentPath = TextUtils.isEmpty(path) ? "" : path;
@@ -1898,4 +1930,3 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         ftp.loadFtpFolderInPane(folder, pane1);
     }
 }
-

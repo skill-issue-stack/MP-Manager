@@ -904,7 +904,8 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                             File inputPath = new File(inputStr);
                             boolean canOpen = inputPath.exists() && inputPath.isDirectory()
                                     || (!inputPath.exists() && inputPath.mkdirs())
-                                    || "/".equals(inputStr);
+                                    || "/".equals(inputStr)
+                                    || "/storage".equals(inputStr);
                             if (!canOpen) {
                                 try {
                                     String abs = inputPath.getAbsolutePath();
@@ -1362,10 +1363,13 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         File[] files = null;
         String folderPath = folder.getAbsolutePath();
 
-        // SELinux denies readdir("/") for untrusted_app. Substitute a
-        // hand-built listing so the user can still navigate into subfolders.
+        // SELinux denies readdir("/") and readdir on /storage/emulated &
+        // /storage/self for untrusted_app. Substitute hand-built listings so
+        // the user can still navigate into the subfolders they CAN read.
         if ("/".equals(folderPath)) {
             files = syntheticRootListing();
+        } else if ("/storage".equals(folderPath)) {
+            files = syntheticStorageListing();
         }
 
         boolean rootListingPath = !"/".equals(folderPath) && RootManager.isRootOnlyPath(folderPath);
@@ -1553,14 +1557,37 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     }
 
     /**
+     * SELinux blocks readdir on /storage/emulated and /storage/self, but the
+     * real user-visible storage lives one level deeper at /storage/emulated/0.
+     * Fabricate /storage's listing so the user sees the folders they can
+     * actually open (primary storage + any physical SD card mounts).
+     */
+    private File[] syntheticStorageListing() {
+        List<File> list = new ArrayList<>();
+        File primary = new File("/storage/emulated/0");
+        if (primary.exists() && primary.isDirectory()) list.add(primary);
+        File[] candidates = new File("/storage").listFiles();
+        if (candidates != null) {
+            for (File f : candidates) {
+                if (!f.isDirectory()) continue;
+                String name = f.getName();
+                if ("emulated".equals(name) || "self".equals(name)) continue;
+                if (f.canRead()) list.add(f);
+            }
+        }
+        return list.toArray(new File[0]);
+    }
+
+    /**
      * True if we can actually open this folder. Handles the SELinux-blocked
-     * cases: "/" itself and any of the synthetic root paths (which the app
-     * cannot listFiles() but can still navigate into).
+     * cases: "/" itself, "/storage", and any of the synthetic root paths
+     * (which the app cannot listFiles() but can still navigate into).
      */
     private boolean canOpenFolder(File f) {
         if (f == null) return false;
         String abs = f.getAbsolutePath();
         if ("/".equals(abs)) return true;
+        if ("/storage".equals(abs)) return true;
         if (f.canRead()) return true;
         try {
             if (canListViaRoot(f)) return true;

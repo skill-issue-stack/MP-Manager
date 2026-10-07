@@ -1159,7 +1159,17 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                             File parentInZip = new File(adapter.currentZipPath).getParentFile();
                             loadZipFolderInPane(zipFile, parentInZip != null ? parentInZip.getPath() : "", isPane1, true);
                         }
-                    } else loadFolderInPane((File) adapter.getItem(0), isPane1);
+                    } else {
+                        File current = isPane1 ? pane1Folder : pane2Folder;
+                        File target = current != null ? current.getParentFile() : (File) adapter.getItem(0);
+                        while (target != null && !canOpenFolder(target)) {
+                            File pp = target.getParentFile();
+                            if (pp == null) break;
+                            target = pp;
+                        }
+                        if (target != null && canOpenFolder(target)) loadFolderInPane(target, isPane1);
+                        else loadFolderInPane((File) adapter.getItem(0), isPane1);
+                    }
                 } else {
                     ftp.ftpParent(isPane1);
                 }
@@ -1257,8 +1267,16 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                         } else {
                             String path = this.<TextView>findViewById(R.id.currentFolderPath).getText().toString();
                             File f = new File(path).getParentFile();
-                            if (f != null && (f.canRead() || canListViaRoot(f))) loadFolderInPane(f, lastPaneSelected == 1);
-                            else if (isBackPressedToExit) {
+                            // Climb past unreadable intermediate dirs (e.g. /storage/emulated)
+                            // until we hit something we can open — or root.
+                            while (f != null && !canOpenFolder(f)) {
+                                File pp = f.getParentFile();
+                                if (pp == null) break;
+                                f = pp;
+                            }
+                            if (f != null && canOpenFolder(f)) {
+                                loadFolderInPane(f, lastPaneSelected == 1);
+                            } else if (isBackPressedToExit) {
                                 handler.removeCallbacks(resetExitPrompt);
                                 finishAffinity();
                             } else {
@@ -1507,25 +1525,51 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     }
 
     /**
+     * Paths directly under "/" that we fabricate because SELinux blocks
+     * readdir("/") for untrusted apps. Also used to whitelist navigable
+     * ancestors during up/back navigation.
+     */
+    private static final String[] SYNTHETIC_ROOT_PATHS = {
+            "/acct", "/apex", "/bin", "/bugreports", "/cache", "/config",
+            "/data", "/debug_ramdisk", "/dev", "/etc", "/linkerconfig",
+            "/metadata", "/mnt", "/oem", "/postinstall", "/proc",
+            "/product", "/sdcard", "/storage", "/sys", "/system",
+            "/system_ext", "/vendor"
+    };
+
+    /**
      * SELinux blocks readdir("/") for regular apps (avc: denied on rootfs),
      * so we fabricate the top-level listing ourselves. Browsing subfolders
      * like /system, /vendor, /proc still works normally.
      */
     private File[] syntheticRootListing() {
-        String[] paths = {
-                "/acct", "/apex", "/bin", "/bugreports", "/cache", "/config",
-                "/data", "/debug_ramdisk", "/dev", "/etc", "/linkerconfig",
-                "/metadata", "/mnt", "/oem", "/postinstall", "/proc",
-                "/product", "/sdcard", "/storage", "/sys", "/system",
-                "/system_ext", "/vendor"
-        };
         List<File> list = new ArrayList<>();
-        for (String p : paths) {
+        for (String p : SYNTHETIC_ROOT_PATHS) {
             File f = new File(p);
             // Only add paths that actually exist so the list matches the device.
             if (f.exists()) list.add(f);
         }
         return list.toArray(new File[0]);
+    }
+
+    /**
+     * True if we can actually open this folder. Handles the SELinux-blocked
+     * cases: "/" itself and any of the synthetic root paths (which the app
+     * cannot listFiles() but can still navigate into).
+     */
+    private boolean canOpenFolder(File f) {
+        if (f == null) return false;
+        String abs = f.getAbsolutePath();
+        if ("/".equals(abs)) return true;
+        if (f.canRead()) return true;
+        try {
+            if (canListViaRoot(f)) return true;
+        } catch (Exception ignored) {
+        }
+        for (String p : SYNTHETIC_ROOT_PATHS) {
+            if (p.equals(abs)) return true;
+        }
+        return false;
     }
 
     public void loadZipFolderInPane(File zipFile, String path, boolean pane1, boolean addToHistory) {

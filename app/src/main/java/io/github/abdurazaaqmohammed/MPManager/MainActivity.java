@@ -332,9 +332,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         if (resultCode == 0) if (doesNotHaveStoragePerm(this)) {
             Extensions.showMessage(this, R.string.storage_perm_needed);
         } else {
-            // Editor was closed without returning a modified file (back press /
-            // discard in ARSC, text or dex editors). Refresh the listing in place;
-            // recreate() would drop the user back at the home folder.
             try {
                 refreshPane(lastPaneSelected == 1);
             } catch (Exception ignored) {
@@ -389,9 +386,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         multiSelect.onPaneTouched(pane);
     }
 
-
-
-
     private void setupSidebar() {
         sidebar.setupSidebar();
     }
@@ -404,7 +398,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         sidebar.refreshSidebar(sectionOrder);
     }
 
-    /** Sidebar shortcut: screen color picker service. Called by SidebarController. */
     public void openColorPickerTool() {
         if (Build.VERSION.SDK_INT < 24) return;
         PreferencesDialogFragment dialogFragment = new PreferencesDialogFragment();
@@ -439,7 +432,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         });
     }
 
-    /** Sidebar shortcut: layout inspector service. Called by SidebarController. */
     public void openLayoutInspectorTool() {
         if (Build.VERSION.SDK_INT < 20) return;
         if (DataRepository.getInstance().getAppState().isRunning()) {
@@ -486,7 +478,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
     }
 
-    /** Bookmarks state, forwarded to BookmarksController (used by SidebarController). */
     public List<String> bookmarkGroups() {
         return bookmarksUI.bookmarkGroups();
     }
@@ -524,7 +515,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             int currentNightMode = newConfig.uiMode & Configuration.UI_MODE_NIGHT_MASK;
             if (currentNightMode == Configuration.UI_MODE_NIGHT_YES) {
                 if (theme != R.style.Theme_MyApp_Dark) {
-                    // BaseActivity re-applies the SYSTEM_DEFAULT plugin on recreate.
                     theme = R.style.Theme_MyApp_Dark;
                     recreate();
                 }
@@ -580,7 +570,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     });
 
-    /** Launches an external file-plugin activity; result goes to cb (may be null). */
     public void launchExternalFile(Intent intent, Consumer<ActivityResult> cb) {
         try {
             pendingExternalFile = cb;
@@ -602,7 +591,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     });
 
-    /** Launches an external APK-plugin activity; result goes to cb (may be null). */
     public void launchExternalApk(Intent intent, Consumer<ActivityResult> cb) {
         try {
             pendingExternalApk = cb;
@@ -612,7 +600,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     }
 
-    /** Launches an external setting config activity; result goes to cb (may be null). */
     public void launchExternalSetting(Intent intent, Consumer<ActivityResult> cb) {
         try {
             pendingExternalSetting = cb;
@@ -634,9 +621,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }});
 
     private void setupSystemBars() {
-        // Global insets are applied in BaseActivity.
-
-
         boolean lightBars;
         String pluginId = ThemeRegistry.getCurrentId(this);
         if (pluginId == null || BuiltInThemes.SYSTEM_DEFAULT_ID.equals(pluginId)) {
@@ -650,7 +634,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             getWindow().setStatusBarColor(surfaceColor);
             getWindow().setNavigationBarColor(surfaceColor);
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M && lightBars) {
-                // Old devices can't render dark status bar icons; use a dark bar so icons stay visible
                 int darkBar = MaterialColors.getColor(this, com.google.android.material.R.attr.colorPrimary, surfaceColor);
                 getWindow().setStatusBarColor(darkBar);
                 getWindow().setNavigationBarColor(darkBar);
@@ -661,11 +644,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         controller.setAppearanceLightNavigationBars(lightBars);
     }
 
-    /**
-     * One-time upgrade from legacy theme storage (boolean "systemTheme" +
-     * int style-res "theme") to ThemeRegistry's string id. Runs before
-     * BaseActivity applies the theme so first launch after update is correct.
-     */
     private void upgradeThemePrefsIfNeeded() {
         try {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
@@ -688,22 +666,16 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     protected void onCreate(Bundle savedInstanceState) {
         upgradeThemePrefsIfNeeded();
         super.onCreate(savedInstanceState);
-        // BaseActivity applied the ThemeRegistry plugin; sync legacy fields for
-        // status-bar tinting, icon colors and intent extras during transition.
         theme = ThemeRegistry.currentStyleRes(this);
         systemTheme = BuiltInThemes.SYSTEM_DEFAULT_ID.equals(ThemeRegistry.getCurrentId(this));
         SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(this);
         ShizukuFileOps.init(this);
         ShizukuShell.warmUp(this);
-        //WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
 
         setContentView(R.layout.activity_main);
         setupSystemBars();
         checkStoragePerm();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) mediaProjectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        // App language is applied by AppCompatDelegate per-app locales
-        // (see SettingsController.setupLanguageSettings + res/xml/locales_config.xml).
-        // System locale automatically picks values / values-es / values-ru / values-zh-rCN.
         rss = getResources();
 
         new Thread(() -> {
@@ -754,17 +726,13 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         drawerLayout = findViewById(R.id.drawer_layout);
         View sidebarDrawer = findViewById(R.id.sidebar_drawer);
 
-        if (sidebarDrawer.getBackground() instanceof GradientDrawable sidebarBackground) {
-//            sidebarBackground.setColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorSurface, Color.BLACK));
-//            sidebarDrawer.setBackground(sidebarBackground);
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             sidebarDrawer.setClipToOutline(true);
         }
         bottomSheetBehavior = BottomSheetBehavior.from(findViewById(R.id.bookmarks_drawer));
-        bottomSheetBehavior.setPeekHeight(0, false); // animate=false, keeps it hidden
-        bottomSheetBehavior.setHideable(true); // allows fully hidden state
-        bottomSheetBehavior.setState(BottomSheetBehavior.STATE_HIDDEN); // truly hidden at start
+        bottomSheetBehavior.setPeekHeight(0, false);
+        bottomSheetBehavior.setHideable(true);
+        bottomSheetBehavior.setState(BottomSheetBehavior.STATE_HIDDEN);
 
         bottomSheetBehavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
             @Override
@@ -816,14 +784,13 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override
                     public boolean onDown(@NonNull MotionEvent e) {
-                        return true; // MUST return true to receive subsequent events
+                        return true;
                     }
 
                     @Override
                     public boolean onFling(MotionEvent e1, @NonNull MotionEvent e2,
                                            float velocityX, float velocityY) {
-                        // upward movement (px)
-                        if (e1 != null && e1.getY() - e2.getY() > 50 && velocityY < -200) { // negative = upward velocity
+                        if (e1 != null && e1.getY() - e2.getY() > 50 && velocityY < -200) {
                             openBookmarksDrawer();
                             return true;
                         }
@@ -873,8 +840,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             return false;
         });
 
-
-
         pane2.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 if (lastPaneSelected != 2) setCurrentPane(2);
@@ -891,21 +856,23 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 return false;
             });
             currentFolderView.setOnClickListener(v -> {
-                View textInputLayout = LayoutInflater.from(this).inflate(R.layout.material_edittext, null);//new TextInputLayout(this, null, com.google.android.material.R.style.Widget_MaterialComponents_TextInputLayout_OutlinedBox);
+                View textInputLayout = LayoutInflater.from(this).inflate(R.layout.material_edittext, null);
                 EditText input = textInputLayout.findViewById(R.id.m_et_edittext);
                 input.setText(((TextView) v).getText());
                 AlertDialog ad = dialogUtil.getDialogBuilder()
                         .setTitle(R.string.path)
                         .setView(textInputLayout)
                         .setNegativeButton(android.R.string.cancel, null)
-                        .setNeutralButton(android.R.string.paste, null) // Note: Need to set it after otherwise the dialog auto close
+                        .setNeutralButton(android.R.string.paste, null)
                         .setPositiveButton(android.R.string.ok, (dialog, which) -> {
                             String inputStr = input.getText().toString().trim();
                             File inputPath = new File(inputStr);
                             boolean canOpen = inputPath.exists() && inputPath.isDirectory()
                                     || (!inputPath.exists() && inputPath.mkdirs())
                                     || "/".equals(inputStr)
-                                    || "/storage".equals(inputStr);
+                                    || "/storage".equals(inputStr)
+                                    || "/storage/emulated".equals(inputStr)
+                                    || "/storage/self".equals(inputStr);
                             if (!canOpen) {
                                 try {
                                     String abs = inputPath.getAbsolutePath();
@@ -960,7 +927,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                             else if (mkdirViaRoot(ogFolder, inputStr)) loadFolderInPane(ogFolder, isPane1);
                             else Extensions.showMessage(MainActivity.this, rss.getString(R.string.failed_to_create_folder, inputStr));
                         })
-                        .setNeutralButton(android.R.string.paste, null) // Note: Need to set it after otherwise the dialog auto close
+                        .setNeutralButton(android.R.string.paste, null)
                         .setPositiveButton(rss.getString(R.string.file), (dialog, which) -> {
                             boolean isPane1 = lastPaneSelected == 1;
                             File ogFolder = isPane1 ? pane1Folder : pane2Folder;
@@ -984,7 +951,7 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                     if (selectionStart != selectionEnd) {
                         input.getText().delete(selectionStart, selectionEnd);
                         input.getText().insert(selectionStart, text);
-                    } else if(selectionEnd == -1) { // Empty
+                    } else if(selectionEnd == -1) {
                         input.setText(text);
                     }
                 });
@@ -1312,8 +1279,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         navigation.refresh();
     }
 
-    // PaneNavigationController.Host: view/loading access for the controller.
-
     @Override
     public void loadFolder(File folder, boolean pane1, boolean addToHistory) {
         loadFolderInPane(folder, pane1, addToHistory);
@@ -1363,13 +1328,17 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         File[] files = null;
         String folderPath = folder.getAbsolutePath();
 
-        // SELinux denies readdir("/") and readdir on /storage/emulated &
-        // /storage/self for untrusted_app. Substitute hand-built listings so
-        // the user can still navigate into the subfolders they CAN read.
+        // SELinux denies readdir on "/", "/storage/emulated", "/storage/self".
+        // Fabricate listings for those so users can navigate into the readable
+        // subfolders (e.g. /storage/emulated/0) without root or Shizuku.
         if ("/".equals(folderPath)) {
             files = syntheticRootListing();
         } else if ("/storage".equals(folderPath)) {
             files = syntheticStorageListing();
+        } else if ("/storage/emulated".equals(folderPath)) {
+            files = syntheticEmulatedListing();
+        } else if ("/storage/self".equals(folderPath)) {
+            files = syntheticSelfListing();
         }
 
         boolean rootListingPath = !"/".equals(folderPath) && RootManager.isRootOnlyPath(folderPath);
@@ -1378,11 +1347,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             if (files != null) files = Arrays.stream(files).filter(this::isNotHidden).toArray(File[]::new);
         }
         if (files == null) files = folder.listFiles(this::isNotHidden);
-        // A folder the app cannot read may still be listable (read-only) through the shell:
-        // Android/data on API 30+, plus browsable system paths like /storage/emulated and
-        // /system. Retry via Shizuku, then root, when the app got nothing or an empty
-        // listing from a folder it cannot write to (an empty listing there means the OS hid
-        // the contents rather than the folder really being empty).
         boolean appListingIncomplete = files == null || (files.length == 0 && !canWriteNormally(folder));
         if (appListingIncomplete) {
             File[] viaShizuku = ShizukuFile.tryList(this, folder);
@@ -1523,7 +1487,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         RecyclerView pane = findViewById(pane1 ? R.id.listViewPane1 : R.id.listViewPane2);
         File parent = folder.getParentFile() != null ? folder.getParentFile() : folder;
         pane.setAdapter(new MainFilesArrayAdapter(this, files, parent, pane1, false, null));
-        // Fresh listing = no selection in this pane; sync the bottom bar if it's current.
         if ((pane1 ? lastPaneSelected == 1 : lastPaneSelected == 2)) setMultiSelectModeUI(false);
         updateNavigationButtons();
     }
@@ -1543,51 +1506,75 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     /**
      * SELinux blocks readdir("/") for regular apps (avc: denied on rootfs),
-     * so we fabricate the top-level listing ourselves. Browsing subfolders
-     * like /system, /vendor, /proc still works normally.
+     * so we fabricate the top-level listing ourselves.
      */
     private File[] syntheticRootListing() {
         List<File> list = new ArrayList<>();
         for (String p : SYNTHETIC_ROOT_PATHS) {
             File f = new File(p);
-            // Only add paths that actually exist so the list matches the device.
             if (f.exists()) list.add(f);
         }
         return list.toArray(new File[0]);
     }
 
     /**
-     * SELinux blocks readdir on /storage/emulated and /storage/self, but the
-     * real user-visible storage lives one level deeper at /storage/emulated/0.
-     * Fabricate /storage's listing so the user sees the folders they can
-     * actually open (primary storage + any physical SD card mounts).
+     * /storage normally contains "emulated", "self" and optional SD card mounts.
+     * Show "emulated" and "self" entries so the user can navigate into them,
+     * plus any readable physical mounts (SD cards).
      */
     private File[] syntheticStorageListing() {
         List<File> list = new ArrayList<>();
-        File primary = new File("/storage/emulated/0");
-        if (primary.exists() && primary.isDirectory()) list.add(primary);
+        list.add(new File("/storage/emulated"));
+        list.add(new File("/storage/self"));
         File[] candidates = new File("/storage").listFiles();
         if (candidates != null) {
             for (File f : candidates) {
-                if (!f.isDirectory()) continue;
                 String name = f.getName();
                 if ("emulated".equals(name) || "self".equals(name)) continue;
-                if (f.canRead()) list.add(f);
+                if (f.isDirectory()) list.add(f);
             }
         }
         return list.toArray(new File[0]);
     }
 
     /**
-     * True if we can actually open this folder. Handles the SELinux-blocked
-     * cases: "/" itself, "/storage", and any of the synthetic root paths
-     * (which the app cannot listFiles() but can still navigate into).
+     * /storage/emulated/0 is the primary internal storage. Also show other
+     * user profiles (10, 11, ...) if accessible.
+     */
+    private File[] syntheticEmulatedListing() {
+        List<File> list = new ArrayList<>();
+        File zero = new File("/storage/emulated/0");
+        if (zero.exists() || zero.isDirectory()) list.add(zero);
+        File[] real = new File("/storage/emulated").listFiles();
+        if (real != null) {
+            for (File f : real) {
+                if (!"0".equals(f.getName()) && f.isDirectory()) list.add(f);
+            }
+        }
+        return list.toArray(new File[0]);
+    }
+
+    /**
+     * /storage/self is a symlink to /storage/emulated. Show "0" entry.
+     */
+    private File[] syntheticSelfListing() {
+        List<File> list = new ArrayList<>();
+        File zero = new File("/storage/emulated/0");
+        if (zero.exists() || zero.isDirectory()) list.add(zero);
+        return list.toArray(new File[0]);
+    }
+
+    /**
+     * True if we can actually open this folder — either via the real filesystem,
+     * via root, or via one of our synthetic listings for SELinux-blocked dirs.
      */
     private boolean canOpenFolder(File f) {
         if (f == null) return false;
         String abs = f.getAbsolutePath();
         if ("/".equals(abs)) return true;
         if ("/storage".equals(abs)) return true;
+        if ("/storage/emulated".equals(abs)) return true;
+        if ("/storage/self".equals(abs)) return true;
         if (f.canRead()) return true;
         try {
             if (canListViaRoot(f)) return true;
@@ -1619,26 +1606,22 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 }
 
                 List<FileHeader> fhs = zf.getFileHeaders();
-                String prefix = parentPath; // already normalized with trailing slash if non-empty
+                String prefix = parentPath;
                 for (FileHeader fh : fhs) {
                     String entryPath = fh.getFileName().replace('\\','/');
                     if (!entryPath.startsWith(prefix) || entryPath.equals(prefix)) continue;
-                    String rest = entryPath.substring(prefix.length()); // e.g., "subdir/file" or "file.txt" or "subdir/"
-                    // direct child if rest has no further '/'
+                    String rest = entryPath.substring(prefix.length());
                     int nextSlash = rest.indexOf('/');
                     if (nextSlash == -1) {
-                        // file directly inside current folder
                         ZipEntryInfo info = new ZipEntryInfo(fh, zipFile, path);
                         if (isNotHidden(info)) entries.add(info);
                     } else {
-                        // it's inside a subdirectory; we should add a single synthetic directory entry for that subdir
-                        String childDirName = rest.substring(0, nextSlash + 1); // include trailing slash
-                        String childFullPath = prefix + childDirName; // full path of the child dir
-                        // add only once: track seen dirs with a Set<String>
+                        String childDirName = rest.substring(0, nextSlash + 1);
+                        String childFullPath = prefix + childDirName;
                         if (seenDirs.add(childFullPath)) {
                             FileHeader syntheticDir = new FileHeader();
                             syntheticDir.setFileName(childFullPath);
-                            ZipEntryInfo info = new ZipEntryInfo(syntheticDir, zipFile, path); // or use new ctor
+                            ZipEntryInfo info = new ZipEntryInfo(syntheticDir, zipFile, path);
                             if (isNotHidden(info)) entries.add(info);
                         }
                     }
@@ -1665,7 +1648,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             boolean isCurrentPane = pane1 ? lastPaneSelected == 1 : lastPaneSelected == 2;
             handler.post(() -> {
                 pane.setAdapter(new MainFilesArrayAdapter(this, entries.toArray(new ZipEntryInfo[0]), finalParent, pane1, true, path));
-                // Fresh listing = no selection in this pane; sync the bottom bar if it's current.
                 if (isCurrentPane) setMultiSelectModeUI(false);
                 updateNavigationButtons();
             });
@@ -1686,11 +1668,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     }
 
-    /**
-     * True when the app uid itself can write to this directory. Read-only corners such as
-     * /storage/emulated or /system report false here, which is the signal that an empty
-     * listing means "hidden by the OS" and deserves an elevated/Shizuku retry.
-     */
     private static boolean canWriteNormally(File folder) {
         try {
             return folder != null && folder.canWrite();
@@ -1723,7 +1700,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     }
 
-    /** Nudge to install/start/grant Shizuku when the user hits an Android/data folder without it. */
     private void showShizukuGuideOnce(File folder, boolean pane1) {
         boolean installed = ShizukuShell.isInstalled(this);
         String message;
@@ -1742,7 +1718,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
             positiveLabel = R.string.shizuku_grant;
             onPositive = () -> ShizukuShell.requestPermission();
         }
-        // Once the binder arrives (user started Shizuku / granted), reload this folder automatically.
         ShizukuShell.onBinderReceived(() -> runOnUiThread(() -> {
             if (ShizukuShell.isGranted()) loadFolderInPane(folder, pane1, false);
         }));
@@ -1759,8 +1734,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         if(!TextUtils.isEmpty(contentDescription)) Extensions.showMessage(this, contentDescription);
         return false;
     }
-
-
 
     public void reloadCurrentFolder() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -1795,9 +1768,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         int foldersCount = 0;
         int totalCount;
         if (files != null) {
-            // Count from the already-listed array (root listings carry
-            // isDirectory via RootFile). Re-listing with curr.listFiles()
-            // returns null on root-only dirs and would show 0 folders.
             for (File f : files) {
                 try {
                     if (f != null && f.isDirectory()) foldersCount++;
@@ -1826,7 +1796,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
                 setCurrentFolder(adapter.currentZipPath, Arrays.asList(adapter.values));
             } else {
                 File curr = pane == 1 ? pane1Folder : pane2Folder;
-                // ShizukuFile.listFiles() can't list; reuse the entries the adapter already shows.
                 File[] shown = adapter.getShownFiles();
                 setCurrentFolder(curr, shown != null ? shown : curr.listFiles());
             }
@@ -1842,8 +1811,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
 
     public void setCurrentFolder(String path, List<?> files) {
         new Thread(() -> {
-
-            //CollectionsUtils.removeIf(files, (Predicate<Object>) o -> o instanceof ZipEntryInfo && ((ZipEntryInfo) o).isDirectory());
             int foldersCount = 0;
             for(Object item : files) {
                 if(item instanceof ZipEntryInfo && ((ZipEntryInfo) item).isDirectory()) foldersCount++;
@@ -1901,8 +1868,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
         }
     }
 
-
-
     public static boolean areFilesDifferent(File[] files1, File[] files2) throws IOException {
         if (files1 == null || files2 == null)
             return files1 != files2;
@@ -1948,12 +1913,6 @@ public class MainActivity extends BaseActivity implements PaneNavigationControll
     public void showSettingsDialog() {
         startActivity(new Intent(this, MainSettingsActivity.class));
     }
-
-
-
-
-
-
 
     private boolean isNotHidden(File f) {
         return sortFilter.isNotHidden(f);

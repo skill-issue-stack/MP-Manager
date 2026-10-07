@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -23,31 +23,23 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+        run: ./gradlew :app:assembleDebug --no-daemon
 
-      - name: Build Release APK (unsigned)
-        run: ./gradlew :app:assembleRelease --stacktrace --no-daemon
+      - name: Build Release APK
+        run: ./gradlew :app:assembleRelease --no-daemon
         continue-on-error: true
-
-      - name: Find APK files
-        run: find . -name "*.apk" -type f
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: MPManager-debug
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/**/*.apk
-            **/build/outputs/apk/**/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
           name: MPManager-release
-          path: |
-            app/build/outputs/apk/release/*.apk
-            **/build/outputs/apk/**/*.apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: warn
         continue-on-error: true

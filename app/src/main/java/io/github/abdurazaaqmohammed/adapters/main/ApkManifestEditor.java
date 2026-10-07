@@ -53,7 +53,6 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import io.github.abdurazaaqmohammed.MPManager.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -82,9 +81,9 @@ public class ApkManifestEditor {
     }
 
     /**
-     * One-click "make offline" for an APK. Matches permission names as whole
-     * words anywhere in the entry's combined text — robust across AXML decoder
-     * format differences.
+     * One-click "make offline" for an APK. Marks network-permission entries as
+     * disabled instead of removing them — writeManifestEntries() skips disabled
+     * entries, which keeps the XML tree intact and avoids aXMLEncoder crashes.
      */
     public void blockInternetPermissions(File apkFile) {
         ProgressManager pm = new ProgressManager(context, true).show();
@@ -102,25 +101,20 @@ public class ApkManifestEditor {
                 if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
 
                 int removed = 0;
-                int considered = 0;
-                for (int i = entries.size() - 1; i >= 0; i--) {
-                    XMLEntry item = entries.get(i);
+                for (XMLEntry item : entries) {
                     String tag = item.getTag();
                     String value = item.getValue();
-                    String text = item.getText();
+                    if (tag == null || value == null) continue;
+                    if (!tag.contains("uses-permission")) continue;
+                    if (value.startsWith("__DISABLED__")) continue;
 
-                    String combined = (tag == null ? "" : tag)
-                            + " " + (value == null ? "" : value)
-                            + " " + (text == null ? "" : text);
-
-                    if (!combined.toLowerCase().contains("permission")) continue;
-                    considered++;
+                    String cleaned = value.trim().replace("\"", "").replace("'", "").trim();
+                    int dot = cleaned.lastIndexOf('.');
+                    String shortName = dot >= 0 ? cleaned.substring(dot + 1) : cleaned;
 
                     for (String t : targets) {
-                        Pattern p = Pattern.compile(
-                                "(?<![A-Z_])" + Pattern.quote(t) + "(?![A-Z_])");
-                        if (p.matcher(combined).find()) {
-                            entries.remove(i);
+                        if (shortName.equals(t)) {
+                            item.setValue("__DISABLED__" + value);
                             removed++;
                             break;
                         }
@@ -129,10 +123,8 @@ public class ApkManifestEditor {
 
                 if (removed == 0) {
                     pm.dismiss();
-                    final int c = considered;
                     context.handler.post(() ->
-                            Extensions.showMessage(context,
-                                    "No network permissions matched (" + c + " permission entries seen)"));
+                            Extensions.showMessage(context, "No network permissions matched"));
                     return;
                 }
 
@@ -797,6 +789,8 @@ public class ApkManifestEditor {
     }
 
     private void writeManifestEntries(File apkFile, List<XMLEntry> entries) throws Exception {
+        // Skip entries marked as disabled — aXMLEncoder cannot serialize the
+        // "__DISABLED__" prefix and would throw on missing attribute names.
         List<XMLEntry> toWrite = new ArrayList<>();
         for (XMLEntry e : entries) {
             String v = e.getValue();

@@ -53,6 +53,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import io.github.abdurazaaqmohammed.MPManager.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -80,55 +81,58 @@ public class ApkManifestEditor {
         rss = context.rss;
     }
 
-    /** "android.permission.INTERNET" -> "INTERNET" ; "INTERNET" -> "INTERNET" */
-    private static String shortPermName(String perm) {
-        if (perm == null) return "";
-        String p = perm.trim();
-        if (p.isEmpty()) return "";
-        int idx = p.lastIndexOf('.');
-        return idx >= 0 ? p.substring(idx + 1) : p;
-    }
-
     /**
-     * One-click "make offline" for an APK: removes ONLY the 4 network permissions.
-     * Uses exact short-name matching, so no other permission is touched.
+     * One-click "make offline" for an APK. Matches permission names as whole
+     * words anywhere in the entry's combined text — robust across AXML decoder
+     * format differences.
      */
     public void blockInternetPermissions(File apkFile) {
         ProgressManager pm = new ProgressManager(context, true).show();
         pm.setText("Removing network permissions...");
         new Thread(() -> {
             try {
-                final Set<String> targets = new HashSet<>(Arrays.asList(
+                final String[] targets = {
                         "INTERNET",
                         "ACCESS_WIFI_STATE",
                         "CHANGE_WIFI_STATE",
                         "ACCESS_NETWORK_STATE"
-                ));
+                };
 
                 List<XMLEntry> entries = decodeManifest(apkFile);
                 if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
 
                 int removed = 0;
+                int considered = 0;
                 for (int i = entries.size() - 1; i >= 0; i--) {
                     XMLEntry item = entries.get(i);
                     String tag = item.getTag();
                     String value = item.getValue();
-                    if (tag == null || value == null) continue;
-                    if (!tag.contains("uses-permission")) continue;
+                    String text = item.getText();
 
-                    String shortName = shortPermName(value);
-                    if (shortName.isEmpty()) continue;
+                    String combined = (tag == null ? "" : tag)
+                            + " " + (value == null ? "" : value)
+                            + " " + (text == null ? "" : text);
 
-                    if (targets.contains(shortName)) {
-                        entries.remove(i);
-                        removed++;
+                    if (!combined.toLowerCase().contains("permission")) continue;
+                    considered++;
+
+                    for (String t : targets) {
+                        Pattern p = Pattern.compile(
+                                "(?<![A-Z_])" + Pattern.quote(t) + "(?![A-Z_])");
+                        if (p.matcher(combined).find()) {
+                            entries.remove(i);
+                            removed++;
+                            break;
+                        }
                     }
                 }
 
                 if (removed == 0) {
                     pm.dismiss();
+                    final int c = considered;
                     context.handler.post(() ->
-                            Extensions.showMessage(context, "No network permissions found to block"));
+                            Extensions.showMessage(context,
+                                    "No network permissions matched (" + c + " permission entries seen)"));
                     return;
                 }
 

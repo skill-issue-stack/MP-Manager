@@ -38,16 +38,25 @@ import io.github.abdurazaaqmohammed.ui.dialogs.FilePickerDialog;
 
 import android.os.Environment;
 import com.google.android.material.checkbox.MaterialCheckBox;
+import com.reandroid.apk.APKLogger;
+import com.reandroid.apkeditor.compile.BuildOptions;
+import com.reandroid.apkeditor.compile.Builder;
+import com.reandroid.apkeditor.decompile.DecompileOptions;
+import com.reandroid.apkeditor.decompile.Decompiler;
 
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.model.FileHeader;
 import net.lingala.zip4j.model.ZipParameters;
 import net.lingala.zip4j.model.enums.CompressionMethod;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -80,11 +89,6 @@ public class ApkManifestEditor {
         rss = context.rss;
     }
 
-    /**
-     * Extract the short name of a permission.
-     * "android.permission.INTERNET" -> "INTERNET"
-     * "INTERNET" -> "INTERNET"
-     */
     private static String shortPermName(String perm) {
         if (perm == null) return "";
         String p = perm.trim();
@@ -542,36 +546,18 @@ public class ApkManifestEditor {
         writeManifestEntries(apkFile, entries);
     }
 
-    /**
-     * Remove a single permission entry from AndroidManifest.xml.
-     * Uses SHORT-NAME matching (INTERNET vs android.permission.INTERNET).
-     * Does NOT use substring contains() to avoid over-matching.
-     */
+    /** Single-permission removal (used by legacy callers). */
     public void removeManifestPermission(File apkFile, String perm) throws Exception {
-        List<XMLEntry> entries = decodeManifest(apkFile);
-        if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
-
-        String targetShort = shortPermName(perm);
-        if (targetShort.isEmpty()) throw new IOException("Invalid permission: " + perm);
-
-        boolean found = false;
-        for (int i = entries.size() - 1; i >= 0; i--) {
-            XMLEntry item = entries.get(i);
-            String tag = item.getTag();
-            String value = item.getValue();
-            if (tag == null || value == null) continue;
-            if (!tag.contains("uses-permission")) continue;
-            String vShort = shortPermName(value);
-            if (vShort.isEmpty()) continue;
-            if (vShort.equals(targetShort)) {
-                entries.remove(i);
-                found = true;
-            }
-        }
-        if (!found) throw new IOException("Permission not found in manifest: " + perm);
-        writeManifestEntries(apkFile, entries);
+        Set<String> set = new HashSet<>();
+        set.add(perm);
+        stripPermissionsViaRebuild(apkFile, set, false, null);
     }
 
+    /**
+     * Reliable permission editor: decompiles the APK, edits AndroidManifest.xml
+     * as plain text, rebuilds with REAndroid, and copies the result back.
+     * Avoids aXMLEncoder bugs that corrupt the binary manifest on write.
+     */
     public void showPermissionsDialog(File apkFile) {
         ProgressManager pm = new ProgressManager(context, true).show();
         new Thread(() -> {
@@ -603,86 +589,30 @@ public class ApkManifestEditor {
             context.handler.post(() -> {
                 AlertDialog dialog = dialogUtil.getDialogBuilder()
                         .setTitle(rss.getString(R.string.me_perms_n, perms.length))
+                        .setMessage("Uncheck permissions to remove.\nThe APK will be decompiled, edited, and rebuilt.")
                         .setMultiChoiceItems(labels, keep, (d, which, isChecked) -> keep[which] = isChecked)
                         .setNegativeButton(android.R.string.cancel, null)
                         .setPositiveButton(rss.getString(R.string.me_remove_unchecked), (d, which) -> {
                             SignWrapper[] wrapper = new SignWrapper[1];
                             SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(context);
                             boolean[] sign = {settings.getBoolean("autosign", true)};
+
+                            Set<String> toRemove = new HashSet<>();
+                            for (int i = 0; i < perms.length; i++) {
+                                if (!keep[i]) toRemove.add(perms[i]);
+                            }
+                            if (toRemove.isEmpty()) {
+                                Extensions.showMessage(context, "Nothing to remove");
+                                return;
+                            }
+
                             Runnable doEdit = () -> {
                                 ProgressManager pm2 = new ProgressManager(context, true).show();
+                                pm2.setText("Rebuilding APK...");
                                 new Thread(() -> {
                                     try {
-                                        List<XMLEntry> entries = decodeManifest(apkFile);
-                                        if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
-
-                                        // Build set of short names to remove
-                                        Set<String> toRemoveShort = new HashSet<>();
-                                        for (int i = 0; i < perms.length; i++) {
-                                            if (keep[i]) continue;
-                                            String s = shortPermName(perms[i]);
-                                            if (!s.isEmpty()) toRemoveShort.add(s);
-                                        }
-                                        if (toRemoveShort.isEmpty()) {
-                                            pm2.dismiss();
-                                            context.handler.post(() ->
-                                                    Extensions.showMessage(context, "Nothing to remove"));
-                                            return;
-                                        }
-
-                                        int removed = 0;
-                                        for (int i = entries.size() - 1; i >= 0; i--) {
-                                            XMLEntry item = entries.get(i);
-                                            String tag = item.getTag();
-                                            String value = item.getValue();
-                                            if (tag == null || value == null) continue;
-                                            if (!tag.contains("uses-permission")) continue;
-
-                                            String vShort = shortPermName(value);
-                                            if (vShort.isEmpty()) continue;
-
-                                            if (toRemoveShort.contains(vShort)) {
-                                                entries.remove(i);
-                                                removed++;
-                                            }
-                                        }
-
-                                        if (removed == 0) {
-                                            pm2.dismiss();
-                                            context.handler.post(() ->
-                                                    Extensions.showMessage(context, "No permissions matched in manifest"));
-                                            return;
-                                        }
-
-                                        writeManifestEntries(apkFile, entries);
-
-                                        // Verify
-                                        List<XMLEntry> verify = decodeManifest(apkFile);
-                                        int stillThere = 0;
-                                        if (verify != null) {
-                                            for (XMLEntry item : verify) {
-                                                String v = item.getValue();
-                                                String t = item.getTag();
-                                                if (t != null && t.contains("uses-permission") && v != null) {
-                                                    String vShort = shortPermName(v);
-                                                    if (toRemoveShort.contains(vShort)) stillThere++;
-                                                }
-                                            }
-                                        }
-
-                                        if (sign[0] && stillThere == 0) wrapper[0].signApk(apkFile);
+                                        stripPermissionsViaRebuild(apkFile, toRemove, sign[0], wrapper[0]);
                                         pm2.dismiss();
-                                        int done = removed;
-                                        int remaining = stillThere;
-                                        context.handler.post(() -> {
-                                            if (remaining > 0) {
-                                                Extensions.showMessage(context,
-                                                        "Removed " + done + ", still " + remaining + " in manifest");
-                                            } else {
-                                                Extensions.showMessage(context, rss.getString(R.string.me_perms_removed, done));
-                                            }
-                                            context.loadFolderInPane(apkFile.getParentFile(), true);
-                                        });
                                     } catch (Exception e) {
                                         pm2.dismiss();
                                         context.handler.post(() -> new ErrorUtil(context).showError(e));
@@ -698,6 +628,132 @@ public class ApkManifestEditor {
                 dialogUtil.styleAlertDialog(dialog);
             });
         }).start();
+    }
+
+    /**
+     * The safe path: decompile → edit manifest text → rebuild → replace → sign.
+     */
+    private void stripPermissionsViaRebuild(File apkFile, Set<String> permsToRemove,
+                                            boolean sign, SignWrapper wrapper) throws Exception {
+        File tempDir = new File(context.getCacheDir(), "perm_edit_" + System.currentTimeMillis());
+        try {
+            if (!tempDir.mkdirs() && !tempDir.isDirectory()) {
+                throw new IOException("Cannot create temp dir");
+            }
+
+            // 1) Decompile to temp dir
+            ProgressManager pm = new ProgressManager(context, false);
+            APKLogger logger = new SilentLogger();
+            DecompileOptions dopt = new DecompileOptions();
+            dopt.inputFile = apkFile;
+            dopt.outputFile = tempDir;
+            dopt.frameworkVersion = 35;
+            dopt.type = "xml";
+            dopt.loadDex = 0;
+            dopt.dex = false;
+            dopt.noDexDebug = true;
+            dopt.force = true;
+            dopt.validateResDir = true;
+            dopt.splitJson = true;
+            Decompiler decompiler = dopt.newCommandExecutor(logger);
+            decompiler.runCommand();
+
+            File manifestFile = new File(tempDir, "AndroidManifest.xml");
+            if (!manifestFile.exists()) {
+                throw new IOException("AndroidManifest.xml not found after decompile");
+            }
+
+            // 2) Edit manifest text
+            String content = readTextFile(manifestFile);
+            Set<String> shortNames = new HashSet<>();
+            for (String p : permsToRemove) {
+                String s = shortPermName(p);
+                if (!s.isEmpty()) shortNames.add(s);
+            }
+            String edited = removePermissionsFromManifestText(content, shortNames);
+            if (edited == null) {
+                throw new IOException("No matching <uses-permission> found in manifest");
+            }
+            writeTextFile(manifestFile, edited);
+
+            // 3) Rebuild
+            File rebuilt = new File(tempDir, "rebuilt.apk");
+            BuildOptions bopt = new BuildOptions();
+            bopt.inputFile = tempDir;
+            bopt.outputFile = rebuilt;
+            bopt.type = BuildOptions.TYPE_XML;
+            bopt.force = true;
+            bopt.validateResDir = true;
+            bopt.noCache = true;
+            Builder builder = bopt.newCommandExecutor(logger);
+            builder.runCommand();
+
+            if (!rebuilt.exists() || rebuilt.length() == 0) {
+                throw new IOException("Rebuild failed: output APK not produced");
+            }
+
+            // 4) Backup original + replace
+            if (UiPrefs.genBackup(context)) {
+                try { FileUtils.copyFile(apkFile, new File(apkFile.getPath() + ".bak")); }
+                catch (Exception ignored) {}
+            }
+            FileUtils.copyFile(rebuilt, apkFile);
+
+            // 5) Sign
+            if (sign && wrapper != null) wrapper.signApk(apkFile);
+
+            final int removedCount = shortNames.size();
+            context.handler.post(() -> {
+                Extensions.showMessage(context, "Rebuilt APK without " + removedCount + " permission(s)");
+                context.loadFolderInPane(apkFile.getParentFile(), true);
+            });
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
+    /**
+     * Removes all <uses-permission> tags whose android:name short-form matches
+     * any entry in shortNames. Returns null when nothing was removed.
+     */
+    private static String removePermissionsFromManifestText(String content, Set<String> shortNames) {
+        StringBuilder result = new StringBuilder(content.length());
+        int i = 0;
+        int removed = 0;
+        while (i < content.length()) {
+            int start = content.indexOf("<uses-permission", i);
+            if (start < 0) {
+                result.append(content, i, content.length());
+                break;
+            }
+            result.append(content, i, start);
+            int end = content.indexOf('>', start);
+            if (end < 0) {
+                result.append(content, start, content.length());
+                break;
+            }
+            String tag = content.substring(start, end + 1);
+            boolean shouldRemove = false;
+            int nameIdx = tag.indexOf("android:name=\"");
+            if (nameIdx >= 0) {
+                int valStart = nameIdx + "android:name=\"".length();
+                int valEnd = tag.indexOf('"', valStart);
+                if (valEnd > valStart) {
+                    String permName = tag.substring(valStart, valEnd);
+                    String shortName = shortPermName(permName);
+                    if (shortNames.contains(shortName)) {
+                        shouldRemove = true;
+                    }
+                }
+            }
+            if (shouldRemove) {
+                removed++;
+            } else {
+                result.append(tag);
+            }
+            i = end + 1;
+        }
+        return removed > 0 ? result.toString() : null;
     }
 
     public void showManifestTogglesDialog(File apkFile) {
@@ -787,8 +843,6 @@ public class ApkManifestEditor {
     }
 
     private void writeManifestEntries(File apkFile, List<XMLEntry> entries) throws Exception {
-        // Strip out entries marked as disabled — they carry "__DISABLED__" prefix
-        // in their value which would corrupt AndroidManifest.xml if written back.
         List<XMLEntry> toWrite = new ArrayList<>();
         for (XMLEntry e : entries) {
             String v = e.getValue();
@@ -824,5 +878,43 @@ public class ApkManifestEditor {
         try (ZipFile sourceZip = new ZipFile(apkFile)) {
             sourceZip.addStream(is, zp);
         }
+    }
+
+    private static String readTextFile(File f) throws IOException {
+        try (InputStream is = FileUtils.getInputStream(f);
+             BufferedReader r = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line).append('\n');
+            return sb.toString();
+        }
+    }
+
+    private static void writeTextFile(File f, String text) throws IOException {
+        try (OutputStream os = FileUtils.getOutputStream(f)) {
+            os.write(text.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) for (File k : kids) deleteRecursively(k);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    /** Silent logger for decompile/build to avoid progress spam. */
+    private static class SilentLogger implements APKLogger {
+        @Override public void logMessage(String s) {}
+        @Override public void logError(String s) {}
+        @Override public void logMessage(String s, Throwable t) {}
+        @Override public void logError(String s, Throwable t) {}
+        @Override public void close() {}
+        // Some versions of the interface have variadic versions — included for compat
+        public void logMessage(String s, Object... args) {}
+        public void logError(String s, Object... args) {}
     }
 }

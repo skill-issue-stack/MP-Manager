@@ -80,6 +80,18 @@ public class ApkManifestEditor {
         rss = context.rss;
     }
 
+    /**
+     * Extract the short name of a permission.
+     * "android.permission.INTERNET" -> "INTERNET"
+     * "INTERNET" -> "INTERNET"
+     */
+    private static String shortPermName(String perm) {
+        if (perm == null) return "";
+        String p = perm.trim();
+        int idx = p.lastIndexOf('.');
+        return idx >= 0 ? p.substring(idx + 1) : p;
+    }
+
     public void showEditManifestDialog(File apkFile) {
         View quickEditDialog = LayoutInflater.from(context).inflate(R.layout.quick_edit_dialog, null, false);
         quickEditDialog.findViewById(R.id.app_lancer_icon).setOnClickListener(v -> editLauncherIcon(apkFile));
@@ -532,32 +544,31 @@ public class ApkManifestEditor {
 
     /**
      * Remove a single permission entry from AndroidManifest.xml.
-     * Uses lenient matching: manifest values may be short-form ("INTERNET")
-     * while PackageManager reports the full form ("android.permission.INTERNET").
+     * Uses SHORT-NAME matching (INTERNET vs android.permission.INTERNET).
+     * Does NOT use substring contains() to avoid over-matching.
      */
     public void removeManifestPermission(File apkFile, String perm) throws Exception {
         List<XMLEntry> entries = decodeManifest(apkFile);
         if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
+
+        String targetShort = shortPermName(perm);
+        if (targetShort.isEmpty()) throw new IOException("Invalid permission: " + perm);
+
         boolean found = false;
-        String pTrim = perm == null ? "" : perm.trim();
         for (int i = entries.size() - 1; i >= 0; i--) {
             XMLEntry item = entries.get(i);
             String tag = item.getTag();
             String value = item.getValue();
             if (tag == null || value == null) continue;
             if (!tag.contains("uses-permission")) continue;
-            String vTrim = value.trim();
-            if (vTrim.equals(pTrim)
-                    || vTrim.endsWith(pTrim)
-                    || pTrim.endsWith(vTrim)
-                    || vTrim.contains(pTrim)) {
+            String vShort = shortPermName(value);
+            if (vShort.isEmpty()) continue;
+            if (vShort.equals(targetShort)) {
                 entries.remove(i);
                 found = true;
             }
         }
-        if (!found) {
-            throw new IOException("Permission not found in manifest: " + perm);
-        }
+        if (!found) throw new IOException("Permission not found in manifest: " + perm);
         writeManifestEntries(apkFile, entries);
     }
 
@@ -602,15 +613,17 @@ public class ApkManifestEditor {
                                 ProgressManager pm2 = new ProgressManager(context, true).show();
                                 new Thread(() -> {
                                     try {
-                                        // Batch edit: decode once, remove all, write once.
                                         List<XMLEntry> entries = decodeManifest(apkFile);
                                         if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
 
-                                        Set<String> toRemove = new HashSet<>();
+                                        // Build set of short names to remove
+                                        Set<String> toRemoveShort = new HashSet<>();
                                         for (int i = 0; i < perms.length; i++) {
-                                            if (!keep[i]) toRemove.add(perms[i]);
+                                            if (keep[i]) continue;
+                                            String s = shortPermName(perms[i]);
+                                            if (!s.isEmpty()) toRemoveShort.add(s);
                                         }
-                                        if (toRemove.isEmpty()) {
+                                        if (toRemoveShort.isEmpty()) {
                                             pm2.dismiss();
                                             context.handler.post(() ->
                                                     Extensions.showMessage(context, "Nothing to remove"));
@@ -624,17 +637,13 @@ public class ApkManifestEditor {
                                             String value = item.getValue();
                                             if (tag == null || value == null) continue;
                                             if (!tag.contains("uses-permission")) continue;
-                                            String normalized = value.trim();
-                                            for (String p : toRemove) {
-                                                String pTrim = p.trim();
-                                                if (normalized.equals(pTrim)
-                                                        || normalized.endsWith(pTrim)
-                                                        || pTrim.endsWith(normalized)
-                                                        || normalized.contains(pTrim)) {
-                                                    entries.remove(i);
-                                                    removed++;
-                                                    break;
-                                                }
+
+                                            String vShort = shortPermName(value);
+                                            if (vShort.isEmpty()) continue;
+
+                                            if (toRemoveShort.contains(vShort)) {
+                                                entries.remove(i);
+                                                removed++;
                                             }
                                         }
 
@@ -647,7 +656,7 @@ public class ApkManifestEditor {
 
                                         writeManifestEntries(apkFile, entries);
 
-                                        // Verify by re-reading
+                                        // Verify
                                         List<XMLEntry> verify = decodeManifest(apkFile);
                                         int stillThere = 0;
                                         if (verify != null) {
@@ -655,9 +664,8 @@ public class ApkManifestEditor {
                                                 String v = item.getValue();
                                                 String t = item.getTag();
                                                 if (t != null && t.contains("uses-permission") && v != null) {
-                                                    for (String p : toRemove) {
-                                                        if (v.contains(p.trim())) { stillThere++; break; }
-                                                    }
+                                                    String vShort = shortPermName(v);
+                                                    if (toRemoveShort.contains(vShort)) stillThere++;
                                                 }
                                             }
                                         }
@@ -779,8 +787,8 @@ public class ApkManifestEditor {
     }
 
     private void writeManifestEntries(File apkFile, List<XMLEntry> entries) throws Exception {
-        // Strip out entries that were marked as disabled — writing them back would
-        // corrupt AndroidManifest.xml with __DISABLED__ prefixes in their values.
+        // Strip out entries marked as disabled — they carry "__DISABLED__" prefix
+        // in their value which would corrupt AndroidManifest.xml if written back.
         List<XMLEntry> toWrite = new ArrayList<>();
         for (XMLEntry e : entries) {
             String v = e.getValue();

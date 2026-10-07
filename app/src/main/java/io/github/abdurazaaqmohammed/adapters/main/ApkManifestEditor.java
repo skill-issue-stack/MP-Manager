@@ -48,8 +48,11 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import io.github.abdurazaaqmohammed.MPManager.MainActivity;
 import io.github.abdurazaaqmohammed.MPManager.R;
@@ -115,7 +118,7 @@ public class ApkManifestEditor {
             else if (tag.contains("android:versionCode")) verCodeInput.setText(verCode = e.getValue());
             else if (tag.contains("android:versionName")) verNameInput.setText(verName = e.getValue());
             else if (!foundMinSdk && tag.contains("android:minSdkVersion")) {
-                foundMinSdk = true; // Avoid getting wrong minsdk from other property
+                foundMinSdk = true;
                 int minSdkVer = Integer.parseInt(minSdkVersion = e.getValue());
                 minSdk.setText(rss.getString(R.string.android_ver_text, versions[minSdkVer-1], minSdkVer));
             }
@@ -320,7 +323,6 @@ public class ApkManifestEditor {
                 for (XMLEntry e : entries) {
                     if (e.getTag().contains("android:icon")) {
                         String val = e.getValue();
-                        // This is not changing it on all screens sizes fix this
                         if (val.startsWith("res/")) return val;
                     }
                 }
@@ -435,12 +437,15 @@ public class ApkManifestEditor {
     }
 
     private boolean isDisabledEntry(XMLEntry entry) {
-        return entry.getMiddleTag().contains("_disabled")
-                || entry.getTag().contains("_disabled");
+        String mid = entry.getMiddleTag();
+        String tag = entry.getTag();
+        return (mid != null && mid.contains("_disabled"))
+                || (tag != null && tag.contains("_disabled"));
     }
 
     private void toggleDisabled(XMLEntry entry, boolean disable) {
         String current = entry.getValue();
+        if (current == null) current = "";
         if (disable) {
             if (!current.startsWith("__DISABLED__")) {
                 entry.setValue("__DISABLED__" + current);
@@ -525,12 +530,33 @@ public class ApkManifestEditor {
         writeManifestEntries(apkFile, entries);
     }
 
+    /**
+     * Remove a single permission entry from AndroidManifest.xml.
+     * Uses lenient matching: manifest values may be short-form ("INTERNET")
+     * while PackageManager reports the full form ("android.permission.INTERNET").
+     */
     public void removeManifestPermission(File apkFile, String perm) throws Exception {
         List<XMLEntry> entries = decodeManifest(apkFile);
         if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
+        boolean found = false;
+        String pTrim = perm == null ? "" : perm.trim();
         for (int i = entries.size() - 1; i >= 0; i--) {
             XMLEntry item = entries.get(i);
-            if (item.getTag().contains("uses-permission") && perm.equals(item.getValue())) entries.remove(i);
+            String tag = item.getTag();
+            String value = item.getValue();
+            if (tag == null || value == null) continue;
+            if (!tag.contains("uses-permission")) continue;
+            String vTrim = value.trim();
+            if (vTrim.equals(pTrim)
+                    || vTrim.endsWith(pTrim)
+                    || pTrim.endsWith(vTrim)
+                    || vTrim.contains(pTrim)) {
+                entries.remove(i);
+                found = true;
+            }
+        }
+        if (!found) {
+            throw new IOException("Permission not found in manifest: " + perm);
         }
         writeManifestEntries(apkFile, entries);
     }
@@ -576,25 +602,82 @@ public class ApkManifestEditor {
                                 ProgressManager pm2 = new ProgressManager(context, true).show();
                                 new Thread(() -> {
                                     try {
-                                        int removed = 0;
+                                        // Batch edit: decode once, remove all, write once.
+                                        List<XMLEntry> entries = decodeManifest(apkFile);
+                                        if (entries == null) throw new IOException(rss.getString(R.string.me_decode_fail));
+
+                                        Set<String> toRemove = new HashSet<>();
                                         for (int i = 0; i < perms.length; i++) {
-                                            if (keep[i]) continue;
-                                            try {
-                                                removeManifestPermission(apkFile, perms[i]);
-                                                removed++;
-                                            } catch (Exception ignored) {
+                                            if (!keep[i]) toRemove.add(perms[i]);
+                                        }
+                                        if (toRemove.isEmpty()) {
+                                            pm2.dismiss();
+                                            context.handler.post(() ->
+                                                    Extensions.showMessage(context, "Nothing to remove"));
+                                            return;
+                                        }
+
+                                        int removed = 0;
+                                        for (int i = entries.size() - 1; i >= 0; i--) {
+                                            XMLEntry item = entries.get(i);
+                                            String tag = item.getTag();
+                                            String value = item.getValue();
+                                            if (tag == null || value == null) continue;
+                                            if (!tag.contains("uses-permission")) continue;
+                                            String normalized = value.trim();
+                                            for (String p : toRemove) {
+                                                String pTrim = p.trim();
+                                                if (normalized.equals(pTrim)
+                                                        || normalized.endsWith(pTrim)
+                                                        || pTrim.endsWith(normalized)
+                                                        || normalized.contains(pTrim)) {
+                                                    entries.remove(i);
+                                                    removed++;
+                                                    break;
+                                                }
                                             }
                                         }
-                                        if (sign[0]) wrapper[0].signApk(apkFile);
+
+                                        if (removed == 0) {
+                                            pm2.dismiss();
+                                            context.handler.post(() ->
+                                                    Extensions.showMessage(context, "No permissions matched in manifest"));
+                                            return;
+                                        }
+
+                                        writeManifestEntries(apkFile, entries);
+
+                                        // Verify by re-reading
+                                        List<XMLEntry> verify = decodeManifest(apkFile);
+                                        int stillThere = 0;
+                                        if (verify != null) {
+                                            for (XMLEntry item : verify) {
+                                                String v = item.getValue();
+                                                String t = item.getTag();
+                                                if (t != null && t.contains("uses-permission") && v != null) {
+                                                    for (String p : toRemove) {
+                                                        if (v.contains(p.trim())) { stillThere++; break; }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (sign[0] && stillThere == 0) wrapper[0].signApk(apkFile);
                                         pm2.dismiss();
                                         int done = removed;
+                                        int remaining = stillThere;
                                         context.handler.post(() -> {
-                                            Extensions.showMessage(context, rss.getString(R.string.me_perms_removed, done));
+                                            if (remaining > 0) {
+                                                Extensions.showMessage(context,
+                                                        "Removed " + done + ", still " + remaining + " in manifest");
+                                            } else {
+                                                Extensions.showMessage(context, rss.getString(R.string.me_perms_removed, done));
+                                            }
                                             context.loadFolderInPane(apkFile.getParentFile(), true);
                                         });
                                     } catch (Exception e) {
                                         pm2.dismiss();
-                                        new ErrorUtil(context).showError(e);
+                                        context.handler.post(() -> new ErrorUtil(context).showError(e));
                                     }
                                 }).start();
                             };
@@ -696,7 +779,15 @@ public class ApkManifestEditor {
     }
 
     private void writeManifestEntries(File apkFile, List<XMLEntry> entries) throws Exception {
-        replaceZipEntry(apkFile, "AndroidManifest.xml", new aXMLEncoder().encodeString(entries, context));
+        // Strip out entries that were marked as disabled — writing them back would
+        // corrupt AndroidManifest.xml with __DISABLED__ prefixes in their values.
+        List<XMLEntry> toWrite = new ArrayList<>();
+        for (XMLEntry e : entries) {
+            String v = e.getValue();
+            if (v != null && v.startsWith("__DISABLED__")) continue;
+            toWrite.add(e);
+        }
+        replaceZipEntry(apkFile, "AndroidManifest.xml", new aXMLEncoder().encodeString(toWrite, context));
     }
 
     private String appendDisabled(String middleTag) {

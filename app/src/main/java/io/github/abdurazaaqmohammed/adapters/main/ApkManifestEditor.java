@@ -546,17 +546,24 @@ public class ApkManifestEditor {
         writeManifestEntries(apkFile, entries);
     }
 
-    /** Single-permission removal (used by legacy callers). */
+    /** Single-permission removal (legacy callers). Uses the safe rebuild path. */
     public void removeManifestPermission(File apkFile, String perm) throws Exception {
         Set<String> set = new HashSet<>();
         set.add(perm);
-        stripPermissionsViaRebuild(apkFile, set, false, null);
+        ProgressManager pm = new ProgressManager(context, true).show();
+        APKLogger logger = pm.getLogger();
+        try {
+            stripPermissionsViaRebuild(apkFile, set, logger);
+        } finally {
+            try { logger.close(); } catch (Exception ignored) {}
+            pm.dismiss();
+        }
     }
 
     /**
-     * Reliable permission editor: decompiles the APK, edits AndroidManifest.xml
-     * as plain text, rebuilds with REAndroid, and copies the result back.
-     * Avoids aXMLEncoder bugs that corrupt the binary manifest on write.
+     * Reliable permission editor: decompiles the APK to a temp dir, edits
+     * AndroidManifest.xml as plain text, rebuilds with REAndroid, then copies
+     * the result back. Avoids aXMLEncoder bugs that corrupt the binary manifest.
      */
     public void showPermissionsDialog(File apkFile) {
         ProgressManager pm = new ProgressManager(context, true).show();
@@ -589,7 +596,7 @@ public class ApkManifestEditor {
             context.handler.post(() -> {
                 AlertDialog dialog = dialogUtil.getDialogBuilder()
                         .setTitle(rss.getString(R.string.me_perms_n, perms.length))
-                        .setMessage("Uncheck permissions to remove.\nThe APK will be decompiled, edited, and rebuilt.")
+                        .setMessage("Uncheck permissions to remove. The APK will be decompiled, edited, and rebuilt.")
                         .setMultiChoiceItems(labels, keep, (d, which, isChecked) -> keep[which] = isChecked)
                         .setNegativeButton(android.R.string.cancel, null)
                         .setPositiveButton(rss.getString(R.string.me_remove_unchecked), (d, which) -> {
@@ -606,15 +613,25 @@ public class ApkManifestEditor {
                                 return;
                             }
 
+                            ProgressManager pm2 = new ProgressManager(context, true).show();
+                            pm2.setText("Rebuilding APK...");
+                            APKLogger logger = pm2.getLogger();
+
                             Runnable doEdit = () -> {
-                                ProgressManager pm2 = new ProgressManager(context, true).show();
-                                pm2.setText("Rebuilding APK...");
                                 new Thread(() -> {
                                     try {
-                                        stripPermissionsViaRebuild(apkFile, toRemove, sign[0], wrapper[0]);
-                                        pm2.dismiss();
+                                        stripPermissionsViaRebuild(apkFile, toRemove, logger);
+                                        if (sign[0] && wrapper[0] != null) wrapper[0].signApk(apkFile);
+                                        try { logger.close(); } catch (Exception ignored) {}
+                                        context.handler.post(pm2::dismiss);
+                                        context.handler.post(() -> {
+                                            Extensions.showMessage(context,
+                                                    "Rebuilt APK without " + toRemove.size() + " permission(s)");
+                                            context.loadFolderInPane(apkFile.getParentFile(), true);
+                                        });
                                     } catch (Exception e) {
-                                        pm2.dismiss();
+                                        try { logger.close(); } catch (Exception ignored) {}
+                                        context.handler.post(pm2::dismiss);
                                         context.handler.post(() -> new ErrorUtil(context).showError(e));
                                     }
                                 }).start();
@@ -631,10 +648,11 @@ public class ApkManifestEditor {
     }
 
     /**
-     * The safe path: decompile → edit manifest text → rebuild → replace → sign.
+     * Decompile → edit manifest text → rebuild → replace original.
+     * Caller supplies the APKLogger (from a shown ProgressManager).
      */
     private void stripPermissionsViaRebuild(File apkFile, Set<String> permsToRemove,
-                                            boolean sign, SignWrapper wrapper) throws Exception {
+                                            APKLogger logger) throws Exception {
         File tempDir = new File(context.getCacheDir(), "perm_edit_" + System.currentTimeMillis());
         try {
             if (!tempDir.mkdirs() && !tempDir.isDirectory()) {
@@ -642,8 +660,6 @@ public class ApkManifestEditor {
             }
 
             // 1) Decompile to temp dir
-            ProgressManager pm = new ProgressManager(context, false);
-            APKLogger logger = new SilentLogger();
             DecompileOptions dopt = new DecompileOptions();
             dopt.inputFile = apkFile;
             dopt.outputFile = tempDir;
@@ -656,6 +672,7 @@ public class ApkManifestEditor {
             dopt.validateResDir = true;
             dopt.splitJson = true;
             Decompiler decompiler = dopt.newCommandExecutor(logger);
+            decompiler.setEnableLog(true);
             decompiler.runCommand();
 
             File manifestFile = new File(tempDir, "AndroidManifest.xml");
@@ -685,8 +702,7 @@ public class ApkManifestEditor {
             bopt.force = true;
             bopt.validateResDir = true;
             bopt.noCache = true;
-            Builder builder = bopt.newCommandExecutor(logger);
-            builder.runCommand();
+            new Builder(bopt, logger).runCommand();
 
             if (!rebuilt.exists() || rebuilt.length() == 0) {
                 throw new IOException("Rebuild failed: output APK not produced");
@@ -699,14 +715,7 @@ public class ApkManifestEditor {
             }
             FileUtils.copyFile(rebuilt, apkFile);
 
-            // 5) Sign
-            if (sign && wrapper != null) wrapper.signApk(apkFile);
-
-            final int removedCount = shortNames.size();
-            context.handler.post(() -> {
-                Extensions.showMessage(context, "Rebuilt APK without " + removedCount + " permission(s)");
-                context.loadFolderInPane(apkFile.getParentFile(), true);
-            });
+            // 5) Caller signs after this method returns
         } finally {
             deleteRecursively(tempDir);
         }
@@ -904,17 +913,5 @@ public class ApkManifestEditor {
         }
         //noinspection ResultOfMethodCallIgnored
         f.delete();
-    }
-
-    /** Silent logger for decompile/build to avoid progress spam. */
-    private static class SilentLogger implements APKLogger {
-        @Override public void logMessage(String s) {}
-        @Override public void logError(String s) {}
-        @Override public void logMessage(String s, Throwable t) {}
-        @Override public void logError(String s, Throwable t) {}
-        @Override public void close() {}
-        // Some versions of the interface have variadic versions — included for compat
-        public void logMessage(String s, Object... args) {}
-        public void logError(String s, Object... args) {}
     }
 }
